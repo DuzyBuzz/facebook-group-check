@@ -4,6 +4,7 @@ import fs from 'fs';
 import csv from 'csv-parser';
 import ExcelJS from 'exceljs';
 import type { Page, Browser } from 'puppeteer';
+import { group } from 'console';
 
 puppeteer.use(StealthPlugin());
 
@@ -12,7 +13,10 @@ const randomDelay = () => new Promise(resolve => setTimeout(resolve, Math.random
 async function analyzePage(page: Page, url: string) {
     console.log(`🔍 Analyzing: ${url}`);
     try {
-        await page.goto(url, { waitUntil: 'networkidle0', timeout: 100000 });
+        let aboutUrl = url.endsWith('/about') ? url : `${url}/about`;
+
+        await page.goto(aboutUrl, { waitUntil: 'networkidle0', timeout: 100000 });
+        
 
         // Try to close login dialog if it appears
         try {
@@ -29,87 +33,141 @@ async function analyzePage(page: Page, url: string) {
         // ========== Add Random Scroll (Up/Down) ========== 
         await randomScroll(page);
 
-        // ========== Extract Page Name ==========
-        let pageName = 'N/A';
+        // ========== Extract Group Name ==========
+        let groupName = 'N/A';
         try {
-            pageName = await page.$eval('h1.html-h1', el => el.textContent?.trim() || 'N/A');
+            groupName = await page.$eval('h1.html-h1', el => el.textContent?.trim() || 'N/A');
         } catch (err) {
             console.warn(`⚠️ Page name not found for: ${url}`);
         }
+        // ========== Extract Group Classification ==========
+        let classification = 'N/A';
 
-        // ========== Extract Follower Count ==========
-        let followers = 'N/A';
         try {
-            // Select anchor tags that have "followers" in the href and text content
-            const followerText = await page.$$eval('a[href*="followers"]', links => {
-                for (const link of links) {
-                    const text = link.textContent?.trim() || '';
-                    if (text.toLowerCase().includes('followers')) {
-                        return text;
+            // Wait until DOM is loaded
+            await page.waitForSelector('body');
+        
+            classification = await page.evaluate(() => {
+                const xpath = "//*[contains(text(), 'Public group') or contains(text(), 'Private group')]";
+                const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+                const node = result.singleNodeValue;
+                return node?.textContent?.trim() || 'N/A';
+            });
+        } catch (err) {
+            console.warn(`⚠️ Classification not found for: ${url}`);
+        }
+        
+        
+        
+        // ========== Extract Member Count ==========
+        let memberCount: number | null = null;
+
+        try {
+            await page.waitForSelector('body');
+        
+            memberCount = await page.evaluate(() => {
+                // Loop through all span or divs looking for "total members"
+                const elements = Array.from(document.querySelectorAll('div, span, li'));
+        
+                for (const el of elements) {
+                    const text = el.textContent?.trim() || '';
+        
+                    if (/total members/i.test(text)) {
+                        // Extract the number from "367,430 total members"
+                        const match = text.match(/([\d,]+)\s+total members/i);
+                        if (match) {
+                            return parseInt(match[1].replace(/,/g, ''), 10);
+                        }
                     }
                 }
-                return '';
-            });
         
-            // Extract the numeric part (e.g. 49K or 36,000)
-            const match = followerText.match(/[\d.,KMB]+/i);
-            if (match) {
-                followers = match[0];
-            }
+                return null;
+            });
         } catch (err) {
-            console.warn(`⚠️ Followers not found for: ${url}`);
+            console.warn(`⚠️ Exact member count not found in Activity section for: ${url}`);
         }
+        
         
         
 
-        // ========== Extract Page Category ==========
-        let category = 'N/A';
-        try {
-            const pageDetailsSelector = 'div.x9f619';
-            category = await page.$eval(pageDetailsSelector, el => {
-                const nextText = el.nextSibling?.textContent?.trim() || '';
-                return nextText.replace(/^·\s*/, '');
-            });
-        } catch (err) {
-            console.warn(`⚠️ Category not found for: ${url}`);
-        }
+
 
         // ========== Extract Last Posted Date ==========
-        let lastPosted = 'N/A';
-        try {
-            await page.waitForSelector('div[data-pagelet="TimelineFeedUnit_0"] span[dir="ltr"]', { timeout: 10000 });
-            const spanTexts = await page.$$eval('div[data-pagelet="TimelineFeedUnit_0"] span[dir="ltr"]', els =>
-                els.map(el => el.textContent?.trim())
-            );
-            lastPosted = (spanTexts[1] || '').split('·')[0].trim();
-        } catch (err) {
-            console.warn(`⚠️ Last posted date not found for: ${url}`);
-        }
-        // ========== Extract Social Media Links by Platform ==========
-        let location = '';
+        let postsLastMonth: number | null = 0;
 
         try {
-            // Wait for any span with dir="auto" to load (in case it's a location)
-            await page.waitForSelector('span[dir="auto"]', { timeout: 5000 });
+            await page.waitForSelector('body');
         
-            // Get all text contents from span[dir="auto"]
-            const spanTexts = await page.$$eval('span[dir="auto"]', spans =>
-                spans.map(span => span.textContent?.trim() || '')
-            );
+            postsLastMonth = await page.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('div, span, li'));
         
-            // Find a text that looks like a location (e.g., "City, Country")
-            location = spanTexts.find(text =>
-                /^[A-Za-z\s]+,\s?[A-Za-z\s]+$/.test(text) && text.length <= 50
-            ) || 'N/A';
+                for (const el of elements) {
+                    const text = el.textContent?.trim() || '';
         
+                    // Look for "in the last month" text
+                    if (/in the last month/i.test(text)) {
+                        const match = text.match(/([\d,]+)\s+in the last month/i);
+                        if (match) {
+                            return parseInt(match[1].replace(/,/g, ''), 10);
+                        }
+                    }
+                }
+        
+                return null;
+            });
         } catch (err) {
-            // If any error occurs, default to 'N/A'
-            console.error('❌ Failed to extract location:', err);
-            location = 'N/A';
+            console.warn(`⚠️ Could not find post count in the last month for: ${url}`);
         }
         
-        console.log('📍 Extracted Location:', location);
+        // ========== Extract Social Media Links by Platform ==========
+        let groupLocation: string | null = null;
+        let groupCreationDate: string | null = null;
+        //let groupNameLastChanged: string | null = null;
         
+        try {
+            await page.waitForSelector('body');
+        
+            const groupInfo = await page.evaluate(() => {
+                const data = {
+                    location: null as string | null,
+                    createdOn: null as string | null,
+                    nameChangedOn: null as string | null,
+                };
+        
+                const elements = Array.from(document.querySelectorAll('div, span, li'));
+        
+                for (const el of elements) {
+                    const text = el.textContent?.trim() || '';
+        
+                    if (/group created on/i.test(text)) {
+                        const match = text.match(/Group created on (.+?)(?:\.|$)/i);
+                        if (match) data.createdOn = match[1];
+                    }
+        
+                    if (/name last changed on/i.test(text)) {
+                        const match = text.match(/Name last changed on (.+?)(?:\.|$)/i);
+                        if (match) data.nameChangedOn = match[1];
+                    }
+        
+                    if (/^[A-Z][a-z]+(?:,?\s+[A-Z][a-z]+)*$/.test(text) && /philippines/i.test(text)) {
+                        // Likely a location: capitalize and contains "Philippines"
+                        data.location = text;
+                    }
+                }
+        
+                return data;
+            });
+        
+            groupLocation = groupInfo.location;
+            groupCreationDate = groupInfo.createdOn;
+            //groupNameLastChanged = groupInfo.nameChangedOn;
+        
+        } catch (err) {
+            console.warn(`⚠️ Could not extract group location or history for: ${url}`);
+        }
+
+
+
         
         
 
@@ -162,71 +220,73 @@ async function analyzePage(page: Page, url: string) {
         
 
         
-        // ========== Extract all anchor tags with hrefs ==========
-        const links = await page.$$eval('a', as => as.map(a => a.href));
+        // // ========== Extract all anchor tags with hrefs ==========
+        // const links = await page.$$eval('a', as => as.map(a => a.href));
 
-        // ========== Get social media links ==========
-        const baseUrl = page.url();  // Get the base URL of the page for relative URLs
-        let instagram = cleanSocialLink(
-            links.find(link => link.includes('instagram.com')) || '',
-            'instagram',
-            baseUrl
-        );
-        let tiktok = cleanSocialLink(
-            links.find(link => link.includes('tiktok.com')) || '',
-            'tiktok',
-            baseUrl
-        );
-        let youtube = cleanSocialLink(
-            links.find(link => link.includes('youtube.com')) || '',
-            'youtube',
-            baseUrl
-        );
-        let twitter = cleanSocialLink(
-            links.find(link => link.includes('twitter.com') || link.includes('x.com')) || '',
-            'x',
-            baseUrl
-        );
+        // // ========== Get social media links ==========
+        // const baseUrl = page.url();  // Get the base URL of the page for relative URLs
+        // let instagram = cleanSocialLink(
+        //     links.find(link => link.includes('instagram.com')) || '',
+        //     'instagram',
+        //     baseUrl
+        // );
+        // let tiktok = cleanSocialLink(
+        //     links.find(link => link.includes('tiktok.com')) || '',
+        //     'tiktok',
+        //     baseUrl
+        // );
+        // let youtube = cleanSocialLink(
+        //     links.find(link => link.includes('youtube.com')) || '',
+        //     'youtube',
+        //     baseUrl
+        // );
+        // let twitter = cleanSocialLink(
+        //     links.find(link => link.includes('twitter.com') || link.includes('x.com')) || '',
+        //     'x',
+        //     baseUrl
+        // );
 
-        // Try to get the links if they weren't found earlier
-        try {
-            const allLinks = await page.$$eval('a[href]', anchors =>
-                anchors.map(a => a.href.toLowerCase())
-            );
+        // // Try to get the links if they weren't found earlier
+        // try {
+        //     const allLinks = await page.$$eval('a[href]', anchors =>
+        //         anchors.map(a => a.href.toLowerCase())
+        //     );
 
-            for (const link of allLinks) {
-                if (!instagram && link.includes('instagram.com')) instagram = link;
-                if (!tiktok && link.includes('tiktok.com')) tiktok = link;
-                if (!youtube && link.includes('youtube.com')) youtube = link;
-                if (!twitter && link.includes('twitter.com')) twitter = link;
-            }
-        } catch (err) {
-            // Leave blank if error occurs
-        }
+        //     for (const link of allLinks) {
+        //         if (!instagram && link.includes('instagram.com')) instagram = link;
+        //         if (!tiktok && link.includes('tiktok.com')) tiktok = link;
+        //         if (!youtube && link.includes('youtube.com')) youtube = link;
+        //         if (!twitter && link.includes('twitter.com')) twitter = link;
+        //     }
+        // } catch (err) {
+        //     // Leave blank if error occurs
+        // }
         
 
 
 
 
-        // ========== Determine Page Status ==========
-        const isActive = isPostRecent(lastPosted);
+        // ========== Determine Group Status ==========
+        const isActive = postsLastMonth !== null ? isPostRecent(postsLastMonth) : false;
         const pageStatus = isActive ? 'Active' : 'Not Active';
 
         console.log(`✅ Done analyzing: ${url}`);
         return {
             LINK: url,
             USERNAME: username,
-            PAGE_NAME: pageName,
-            FOLLOWERS: followers,
-            PAGEDETAILS: category,
-            LAST_POSTED: lastPosted,
-            LOCATION: location,
+            GROUP_NAME: groupName,
+            MEMBER: memberCount,
+            CLASSIFICATION: classification,
+            POST_LAST_MONTH: postsLastMonth,
+            LOCATION: groupLocation,
+            DATE_JOINED: groupCreationDate,
+            //PAGE_HISTORY: groupNameLastChanged,
             EMAIL_URL: email,
             CONTACT_NUMBER: contactNumber,
-            INSTAGRAM_URL: instagram,
-            TIKTOK_URL: tiktok,
-            YOUTUBE_URL: youtube,
-            X_URL: twitter,
+            // INSTAGRAM_URL: instagram,
+            // TIKTOK_URL: tiktok,
+            // YOUTUBE_URL: youtube,
+            // X_URL: twitter,
             PAGE_STATUS: pageStatus
 
         };
@@ -283,28 +343,12 @@ async function randomScroll(page: Page) {
     }
 }
 
-function isPostRecent(lastPosted: string): boolean {
-    const trimmed = lastPosted.trim().toLowerCase();
-  
-    // ❌ Case 1: If it's N/A or empty
-    if (!trimmed || trimmed === 'n/a') {
-      return false;
+function isPostRecent(postsLastMonth: number): boolean {
+    if (postsLastMonth === 0) {
+        return false; // No posts, group is not active
     }
-  
-    // ❌ Case 2: If it contains a year (4-digit number)
-    if (/\d{4}/.test(trimmed)) {
-      return false;
-    }
-  
-    // ❌ Case 3: If the string contains no number (invalid)
-    if (!/\d/.test(trimmed)) {
-      return false;
-    }
-  
-    // ✅ All other formats (like "March 2", "17h", etc.) are considered Active
-    return true;
-  }
-  
+    return true; // Posts present, group is active
+}
   
   
   
@@ -467,19 +511,20 @@ async function main() {
     
     // Styling the header row
     sheet.columns = [
-        { header: 'PAGE NAME', key: 'PAGE_NAME', width: 40, outlineLevel: 1 },
-        { header: 'USERNAME', key: 'USERNAME', width: 30 },
+        { header: 'GROUP NAME', key: 'GROUP_NAME', width: 40, outlineLevel: 1 },
         { header: 'LINK', key: 'LINK', width: 50, outlineLevel: 1 },
-        { header: 'TOTAL FOLLOWERS', key: 'FOLLOWERS', width: 20, outlineLevel: 1 },
-        { header: 'CLASSIFICATION', key: 'PAGEDETAILS', width: 30, outlineLevel: 1 },
+        { header: 'MEMBER', key: 'MEMBER', width: 20, outlineLevel: 1 },
+        { header: 'CLASSIFICATION', key: 'CLASSIFICATION', width: 30, outlineLevel: 1 },
         { header: 'LOCATION', key: 'LOCATION', width: 40 },
+        { header: 'DATE JOINED', key: 'DATE_JOINED', width: 40 },
+        //{ header: 'PAGE HISTORY', key: 'PAGE_HISTORY', width: 40 },
         { header: 'EMAIL URL', key: 'EMAIL_URL', width: 35 },
-        { header: 'CONTACT NUMBER', key: 'CONTACT_NUMBER', width: 25 },
-        { header: 'INSTAGRAM URL', key: 'INSTAGRAM_URL', width: 50 },
-        { header: 'TIKTOK URL', key: 'TIKTOK_URL', width: 50 },
-        { header: 'YOUTUBE URL', key: 'YOUTUBE_URL', width: 50 },
-        { header: 'X URL', key: 'X_URL', width: 50 },
-        { header: 'LAST POSTED', key: 'LAST_POSTED', width: 25, outlineLevel: 1 },
+        // { header: 'CONTACT NUMBER', key: 'CONTACT_NUMBER', width: 25 },
+        // { header: 'INSTAGRAM URL', key: 'INSTAGRAM_URL', width: 50 },
+        // { header: 'TIKTOK URL', key: 'TIKTOK_URL', width: 50 },
+        // { header: 'YOUTUBE URL', key: 'YOUTUBE_URL', width: 50 },
+        // { header: 'X URL', key: 'X_URL', width: 50 },
+        { header: 'POST_LAST_MONTH', key: 'POST_LAST_MONTH', width: 25, outlineLevel: 1 },
         { header: 'PAGE STATUS', key: 'PAGE_STATUS', width: 20, outlineLevel: 1 }
 
     ];
