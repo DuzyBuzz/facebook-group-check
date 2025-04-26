@@ -13,7 +13,8 @@ const randomDelay = () => new Promise(resolve => setTimeout(resolve, Math.random
 async function analyzePage(page: Page, url: string) {
     console.log(`🔍 Analyzing: ${url}`);
     try {
-        let aboutUrl = url.endsWith('/about') ? url : `${url}/about`;
+        let aboutUrl = url.endsWith('/about') ? url : `${url.replace(/\/$/, '')}/about`;
+
 
         await page.goto(aboutUrl, { waitUntil: 'networkidle0', timeout: 100000 });
         
@@ -524,7 +525,7 @@ async function main() {
         // { header: 'TIKTOK URL', key: 'TIKTOK_URL', width: 50 },
         // { header: 'YOUTUBE URL', key: 'YOUTUBE_URL', width: 50 },
         // { header: 'X URL', key: 'X_URL', width: 50 },
-        { header: 'POST_LAST_MONTH', key: 'POST_LAST_MONTH', width: 25, outlineLevel: 1 },
+        { header: 'POST LAST MONTH', key: 'POST_LAST_MONTH', width: 25, outlineLevel: 1 },
         { header: 'PAGE STATUS', key: 'PAGE_STATUS', width: 20, outlineLevel: 1 }
 
     ];
@@ -547,7 +548,7 @@ async function main() {
         }
     
         // Apply standard cell style
-        row.eachCell((cell, colIndex) => {
+        row.eachCell((cell: any, colIndex: number) => {
             // Special style for the Page Name column
             if (colIndex === 1) {
                 Object.assign(cell, pageNameStyle);
@@ -557,56 +558,57 @@ async function main() {
         });
     
         // Highlight status with colors
-        const statusCell = row.getCell('PAGE_STATUS');
-        if (rowData.PAGE_STATUS === 'Active') {
-            statusCell.fill = {
-                type: 'pattern',
-                pattern: 'solid',
-                fgColor: { argb: 'FF92D050' } // green
-            };
-        } else if (rowData.PAGE_STATUS === 'Not Active') {
-            statusCell.fill = {
-                type: 'pattern',
-                pattern: 'solid',
-                fgColor: { argb: 'FFFF5C5C' } // red
-            };
-        }
+// Highlight status with colors
+const statusCell = row.getCell('PAGE_STATUS');
+if (rowData.PAGE_STATUS === 'Active') {
+    statusCell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FF92D050' } // green
+    };
+} else if (rowData.PAGE_STATUS === 'Not Active') {
+    // 🔥 Make sure all cells exist and apply red fill
+    for (let i = 1; i <= sheet.columns.length; i++) {
+        const cell = row.getCell(i);
+        cell.value = cell.value || ''; // Ensure the cell exists even if it's empty
+        cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: 'FFFF5C5C' } // red
+        };
+    }
+}
+
     });
-
+    
+    // ⬇️ This should be **after** results.forEach (outside it)
     const now = new Date();
-
-    // Helper to pad numbers
     const pad = (n: number) => n.toString().padStart(2, '0');
-
-    // Get date parts
     const month = pad(now.getMonth() + 1);
     const day = pad(now.getDate());
     const year = now.getFullYear();
-
-     // Get time parts
-     let hours = now.getHours();
-     const minutes = pad(now.getMinutes());
-     const seconds = pad(now.getSeconds());
-     const ampm = hours >= 12 ? 'PM' : 'AM';
-     hours = hours % 12 || 12;
- 
-     // Format filename with timestamp
-     const timestamp = `${month}-${day}-${year}_${pad(hours)}-${minutes}-${seconds}_${ampm}`;
-     const fileName = `Facebook_Pages_${timestamp}.xlsx`;
- 
-     // Save the workbook
-     await workbook.xlsx.writeFile(fileName);
-     console.log(`✅ Excel file saved as: ${fileName}`);
- 
-     // Step 5: Log failed links (if any)
-     if (failedLinks.length > 0) {
-         console.log(`⚠️ ${failedLinks.length} pages failed to analyze. Writing to failed_links.txt...`);
-         fs.writeFileSync('failed_links.txt', failedLinks.join('\n'), 'utf-8');
-     } else {
-         console.log('🎉 All pages processed successfully without errors.');
-     }
- 
-     console.log('🏁 Done.');
+    let hours = now.getHours();
+    const minutes = pad(now.getMinutes());
+    const seconds = pad(now.getSeconds());
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12 || 12;
+    
+    const timestamp = `${month}-${day}-${year}_${pad(hours)}-${minutes}-${seconds}_${ampm}`;
+    const fileName = `Facebook_Pages_${timestamp}.xlsx`;
+    
+    await workbook.xlsx.writeFile(fileName);
+    console.log(`✅ Excel file saved as: ${fileName}`);
+    
+    // Step 5: Log failed links (if any)
+    if (failedLinks.length > 0) {
+        console.log(`⚠️ ${failedLinks.length} pages failed to analyze. Writing to failed_links.txt...`);
+        fs.writeFileSync('failed_links.txt', failedLinks.join('\n'), 'utf-8');
+    } else {
+        console.log('🎉 All pages processed successfully without errors.');
+    }
+    
+    console.log('🏁 Done.');
+    
  }
  
  main().catch(err => {
